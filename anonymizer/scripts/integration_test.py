@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -119,6 +120,31 @@ def main():
     rules_phone = json.dumps([[r"1[3-9]\d{9}", "<手机>"]])
     rules_digit = json.dumps([[r"\d", "N"]])
 
+    # A "legacy" completed batch (no index row), as left behind by a version
+    # predating the duplicate-corpus index. The worker's backfill thread must
+    # pick it up while normal anonymization continues.
+    legacy_tid = uuid.uuid4().hex
+    legacy_out = os.path.join(config.OUTPUT_DIR, f"{legacy_tid}.ndjson")
+    with open(legacy_out, "w", encoding="utf-8") as fh:
+        fh.write('{"session_id":"h1","text":"历史重复文本"}\n')
+        fh.write('{"session_id":"h2","text":"跨批重复文本"}\n')
+        fh.write('{"session_id":"h3","text":"历史重复文本"}\n')
+    conn = db.get_conn()
+    conn.execute(
+        """
+        INSERT INTO tasks (task_id, state, progress, total, original_name,
+                           input_path, output_path, rules_json,
+                           created_at, finished_at)
+        VALUES (?, ?, 0, 0, ?, ?, ?, '[]', ?, ?)
+        """,
+        (
+            legacy_tid, config.STATE_COMPLETED, "legacy-history.ndjson",
+            os.path.join(config.UPLOAD_DIR, "legacy-history.ndjson"),
+            legacy_out, db.utcnow_iso(), db.utcnow_iso(),
+        ),
+    )
+    conn.close()
+
     print("[A] 真实 worker 子进程：接单 -> 完成 -> 落盘副本")
     worker = start_worker(DATA_DIR)
     input_path = os.path.join(config.UPLOAD_DIR, "in-a.ndjson")
@@ -140,6 +166,18 @@ def main():
           and lines[499]["session_id"] == "s0049")
     check("全部手机号已脱敏", all("<手机>" in x["text"] for x in lines))
     check("无 tmp 残留", os.listdir(config.TMP_DIR) == [])
+
+    print("[A2] 历史副本后台补建：脱敏不中断，就绪含期间完成批次")
+    deadline = time.monotonic() + 20
+    st = db.dup_readiness()
+    while time.monotonic() < deadline and not st["ready"]:
+        time.sleep(0.2)
+        st = db.dup_readiness()
+    check("索引补建后就绪（含期间完成的批次）", st["ready"], st)
+    groups = {g["text"]: g for g in db.dup_groups(1, 1000)}
+    g = groups.get("历史重复文本")
+    check("历史批次同批重复分别计数",
+          g is not None and g["occurrences"] == 2 and g["batches"] == 1, g)
 
     print("[B] 运行中取消：受理 -> 实际停止替换 -> 清理 -> 不可下载")
     big_path = os.path.join(config.UPLOAD_DIR, "in-b.ndjson")
@@ -242,6 +280,39 @@ def main():
     row = wait_state(tid_f, (config.STATE_CANCELLED,), timeout=30.0)
     check("排队取消生效且未发布",
           row["state"] == config.STATE_CANCELLED and row["output_path"] is None)
+
+    print("[F] 重复语料索引：完成即入索引；失败/取消/中断不参与；重启不重复计数")
+    dup_path = os.path.join(config.UPLOAD_DIR, "in-dup.ndjson")
+    with open(dup_path, "w", encoding="utf-8") as fh:
+        fh.write('{"session_id":"f1","text":"跨批重复文本"}\n')
+        fh.write('{"session_id":"f2","text":"独有文本"}\n')
+    tid_dup = db.create_task("in-dup.ndjson", dup_path, json.loads(rules_phone))
+    row = wait_state(tid_dup, (config.STATE_COMPLETED,), timeout=15.0)
+    check("新任务完成", row["state"] == config.STATE_COMPLETED, row["state"])
+    groups = {g["text"]: g for g in db.dup_groups(1, 1000)}
+    g = groups.get("跨批重复文本")
+    check("完成即入索引，跨批计数=2、批次=2",
+          g is not None and g["occurrences"] == 2 and g["batches"] == 2, g)
+    check("索引就绪保持", db.dup_readiness()["ready"])
+    conn = db.get_conn()
+    n_not_completed = conn.execute(
+        """
+        SELECT COUNT(*) FROM dup_occurrences o
+        JOIN tasks t ON t.task_id = o.task_id
+        WHERE t.state != ?
+        """,
+        (config.STATE_COMPLETED,),
+    ).fetchone()[0]
+    n_legacy = conn.execute(
+        """
+        SELECT COUNT(*) FROM dup_occurrences o
+        JOIN dup_texts t ON t.text_id = o.text_id
+        WHERE t.text = '历史重复文本'
+        """
+    ).fetchone()[0]
+    conn.close()
+    check("失败/取消/中断批次均无索引行", n_not_completed == 0)
+    check("worker 重启后历史批次未重复计数", n_legacy == 2, n_legacy)
 
     stop_worker(worker2)
     time.sleep(0.5)

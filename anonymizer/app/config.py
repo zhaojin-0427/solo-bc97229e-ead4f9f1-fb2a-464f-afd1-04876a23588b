@@ -23,6 +23,14 @@ RULE_TIMEOUT_SECONDS = 2.0
 # Worker polling cadence (seconds).
 WORKER_POLL_INTERVAL = 0.5
 
+# Duplicate-corpus check page: groups per page / sources per page.
+DUP_GROUP_PAGE_SIZE = 20
+DUP_SOURCE_PAGE_SIZE = 50
+
+# Pause between two backfill batches so the historical index build never
+# starves live anonymization work (seconds).
+DUP_BACKFILL_INTERVAL = 0.1
+
 # Terminal task states.
 STATE_PENDING = "pending"
 STATE_RUNNING = "running"

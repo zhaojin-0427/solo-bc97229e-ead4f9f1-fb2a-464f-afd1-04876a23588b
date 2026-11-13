@@ -76,6 +76,8 @@ def _eval(expr, ctx):
         expr.startswith('"') and expr.endswith('"')
     ):
         return expr[1:-1]
+    if re.fullmatch(r"-?\d+", expr):
+        return int(expr)
     # Comparison operators (lowest precedence we need).
     for op in ("==", "!=", ">=", "<=", ">", "<"):
         if op in expr:
@@ -323,6 +325,10 @@ class Request:
         self.method = env["REQUEST_METHOD"]
         self.path = env["PATH_INFO"] or "/"
         self.query = urllib.parse.parse_qs(env.get("QUERY_STRING", ""))
+        # Flask-style single-value query accessor (request.args).
+        self.args = _MultiDict(
+            {k: vals[0] for k, vals in self.query.items() if vals}
+        )
         self.files = _MultiDict()
         self.form = _MultiDict()
         self._parse(body, env)

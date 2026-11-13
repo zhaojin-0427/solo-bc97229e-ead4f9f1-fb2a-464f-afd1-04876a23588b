@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}重复语料核查 · 脱敏平台{% endblock %}
+{% block content %}
+{% if ready %}
+<section class="card">
+  <h2>重复语料核查</h2>
+  <p class="hint">
+    统计范围：全部 {{ status.indexed }} 个已完成批次的脱敏副本（只读核查，不修改副本）。
+    仅列出逐字相同且非空、累计出现至少两次的 <code>text</code>；同一批次内的重复也分别计数。
+  </p>
+  {% if groups %}
+  <table class="task-table">
+    <thead>
+      <tr>
+        <th>重复文本</th>
+        <th>出现次数</th>
+        <th>涉及批次</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for g in groups %}
+      <tr>
+        <td class="dup-text">{{ g.snippet }}</td>
+        <td>{{ g.occurrences }}</td>
+        <td>{{ g.batches }}</td>
+        <td><a class="btn btn-small" href="{{ url_for('duplicate_group', text_id=g.text_id) }}">查看来源</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="pagination">
+    {% if page > 1 %}
+    <a class="btn btn-small" href="{{ url_for('duplicates') }}?page={{ prev_page }}">上一页</a>
+    {% endif %}
+    <span>第 {{ page }} / {{ pages }} 页 · 共 {{ total }} 组</span>
+    {% if page < pages %}
+    <a class="btn btn-small" href="{{ url_for('duplicates') }}?page={{ next_page }}">下一页</a>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="empty">没有发现重复语料：所有已完成副本中的非空 text 均只出现一次。</p>
+  {% endif %}
+</section>
+{% else %}
+<section class="card" id="dup-status-card">
+  <h2>重复语料索引尚未就绪</h2>
+  <p>
+    正在后台为历史已完成副本补建索引（已完成 <strong>{{ status.indexed }} / {{ status.total }}</strong> 个批次），
+    期间上传与脱敏照常进行。为避免返回残缺的核查结果，索引补建完成前本页不展示分组数据。
+  </p>
+  <div class="progress-bar-wrap">
+    <div class="progress-bar" style="width: {{ pct }}%"></div>
+  </div>
+  {% if status.failed %}
+  <h3>以下批次读取失败，需处理后重试</h3>
+  <table class="task-table">
+    <thead>
+      <tr>
+        <th>任务号</th>
+        <th>源文件</th>
+        <th>失败原因</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in status.failed %}
+      <tr>
+        <td class="mono"><a href="{{ url_for('task_detail', task_id=f.task_id) }}">{{ f.task_short }}…</a></td>
+        <td>{{ f.original_name }}</td>
+        <td class="error-text">{{ f.error }}</td>
+        <td>
+          <form method="post" action="{{ url_for('retry_duplicate_index', task_id=f.task_id) }}">
+            <button type="submit" class="btn btn-small btn-primary">重试</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  <p class="hint">页面每 3 秒自动检查，索引就绪后自动展示核查结果。</p>
+</section>
+<script>
+setInterval(async () => {
+  try {
+    const r = await fetch("{{ url_for('api_duplicates_status') }}");
+    if (!r.ok) return;
+    const s = await r.json();
+    if (s.ready) location.reload();
+  } catch (e) { /* 轮询失败不影响页面其它功能 */ }
+}, 3000);
+</script>
+{% endif %}
+{% endblock %}

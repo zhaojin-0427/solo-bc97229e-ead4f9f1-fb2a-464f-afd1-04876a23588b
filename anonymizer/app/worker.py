@@ -9,9 +9,10 @@ import multiprocessing as mp
 import os
 import signal
 import sys
+import threading
 import time
 
-from . import config, db
+from . import config, db, dupindex
 from .executor import ExecutorDied, RegexError, RegexExecutor, RegexTimeout
 from .validation import ValidationError, read_ndjson
 
@@ -118,7 +119,21 @@ def process_task(task):
         final_path = _final_output_path(task_id)
         os.replace(tmp_path, final_path)
 
-        if not db.mark_completed(task_id, final_path):
+        # The success state and this batch's complete duplicate-corpus
+        # index commit in ONE transaction. The copy is parsed before the
+        # transaction starts, so the task store's write lock is never held
+        # during file IO. If the index cannot be built or committed, the
+        # batch fails as a whole instead of publishing an unindexed copy.
+        try:
+            occurrences = dupindex.build_occurrences(final_path)
+            published = db.mark_completed(task_id, final_path, occurrences)
+        except Exception as exc:  # noqa: BLE001 - any index failure fails the batch
+            _remove_quietly(final_path)
+            raise BatchFailure(
+                f"重复语料索引提交失败，整批失败：{exc!r}"
+            ) from exc
+
+        if not published:
             # Cancellation was accepted first. The result must never appear:
             # remove the published file and settle the task as cancelled.
             _remove_quietly(final_path)
@@ -142,10 +157,11 @@ def _handle_signal(signum, _frame):
 
 
 def main():
-    # The regex executor forks a short-lived child per running task. Fork is
-    # safe because the worker holds no threads or held locks when the child is
-    # created; pin it explicitly so container environments never silently pick
-    # a different start method.
+    # The regex executor forks a short-lived child per running task. The
+    # child only touches its own freshly created queues and the `re` module,
+    # never the DB or the backfill thread's state, so fork stays safe even
+    # with the backfill thread running; pin the start method explicitly so
+    # container environments never silently pick a different one.
     try:
         mp.set_start_method("fork")
     except RuntimeError:
@@ -158,6 +174,19 @@ def main():
     db.mark_unfinished_interrupted()
     db.cleanup_orphan_tmp_files()
     db.settle_cancelled_tasks()
+
+    # Backfill the duplicate-corpus index for historical completed copies
+    # in a background thread, one batch per transaction, so anonymization
+    # keeps running while the first-ever index is built. The thread exits
+    # on its own once every completed batch is indexed.
+    backfill_stop = threading.Event()
+    backfill = threading.Thread(
+        target=dupindex.backfill_loop,
+        args=(backfill_stop,),
+        name="dup-backfill",
+        daemon=True,
+    )
+    backfill.start()
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
@@ -188,6 +217,9 @@ def main():
 
     # On graceful shutdown, leave the running task for startup recovery to
     # mark as interrupted. Nothing here is downloadable until completion.
+    # A mid-batch backfill transaction rolls back with the process and is
+    # simply redone on the next start.
+    backfill_stop.set()
     print("[worker] shutting down", flush=True)
     return 0
 

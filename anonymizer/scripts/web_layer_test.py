@@ -49,11 +49,14 @@ def call(app, method, path, fields=None, files=None, raw_len_override=None):
         body, ctype = mpenc.encode(fields, files)
     else:
         body, ctype = b"", "application/x-www-form-urlencoded"
+    query = ""
+    if "?" in path:
+        path, query = path.split("?", 1)
     cookie_header = "; ".join(f"{k}={v}" for k, v in COOKIE_JAR.items())
     env = {
         "REQUEST_METHOD": method,
         "PATH_INFO": path,
-        "QUERY_STRING": "",
+        "QUERY_STRING": query,
         "CONTENT_TYPE": ctype,
         "CONTENT_LENGTH": str(raw_len_override if raw_len_override else len(body)),
         "SERVER_NAME": "test",
@@ -194,6 +197,137 @@ def main():
     text = body.decode()
     check("列表含已完成徽标", "已完成" in text and "已失败" in text)
     check("完成任务出现下载按钮", "下载完整副本" in text)
+
+    print("[W11] 重复核查页：索引未就绪时不返回残缺结果")
+    import threading
+    import uuid
+    from app import dupindex
+
+    def make_legacy_completed(name, content, write_file=True):
+        lid = uuid.uuid4().hex
+        out_path = os.path.join(config.OUTPUT_DIR, f"{lid}.ndjson")
+        if write_file:
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(content)
+        conn = db.get_conn()
+        conn.execute(
+            """
+            INSERT INTO tasks (task_id, state, progress, total, original_name,
+                               input_path, output_path, rules_json,
+                               created_at, finished_at)
+            VALUES (?, ?, 0, 0, ?, ?, ?, '[]', ?, ?)
+            """,
+            (lid, config.STATE_COMPLETED, name,
+             os.path.join(config.UPLOAD_DIR, name), out_path,
+             db.utcnow_iso(), db.utcnow_iso()),
+        )
+        conn.close()
+        return lid, out_path
+
+    legacy1, legacy1_path = make_legacy_completed(
+        "legacy-web.ndjson",
+        '{"session_id":"w9a","text":"网页重复文本"}\n'
+        '{"session_id":"w9a","text":"网页重复文本"}\n'
+        '{"session_id":"w9b","text":"网页独有"}\n',
+    )
+    with open(legacy1_path, encoding="utf-8") as fh:
+        copy_before = fh.read()
+
+    status, _, body = call(app, "GET", "/duplicates")
+    text = body.decode()
+    check("未就绪页 200", status == 200, str(status))
+    check("提示尚未就绪", "尚未就绪" in text)
+    check("不展示分组结果", "查看来源" not in text and "网页重复文本" not in text)
+    status, _, body = call(app, "GET", "/api/duplicates/status")
+    payload = json.loads(body)
+    check("状态 API 未就绪", status == 200 and payload["ready"] is False)
+    check("状态含进度", payload["indexed"] >= 1 and payload["total"] >= 2, payload)
+    status, _, body = call(app, "GET", "/duplicates/1")
+    check("未就绪时组详情同样不返回结果", status == 200 and "尚未就绪" in body.decode())
+
+    print("[W12] 补建后就绪：分组、来源、分页、404、副本只读")
+    dupindex.backfill_loop(threading.Event())
+    status, _, body = call(app, "GET", "/duplicates")
+    text = body.decode()
+    check("就绪后 200 且展示分组", status == 200 and "网页重复文本" in text)
+    check("分组含次数与查看来源", "查看来源" in text and ">2<" in text)
+    check("单次文本不成组", "网页独有" not in text)
+    status, _, body = call(app, "GET", "/api/duplicates/status")
+    check("状态 API 就绪", json.loads(body)["ready"] is True)
+    with open(legacy1_path, encoding="utf-8") as fh:
+        check("索引不修改副本", fh.read() == copy_before)
+
+    conn = db.get_conn()
+    row = conn.execute(
+        "SELECT text_id FROM dup_texts WHERE text = '网页重复文本'"
+    ).fetchone()
+    dup_text_id = row["text_id"]
+    singleton_id = conn.execute(
+        "SELECT text_id FROM dup_texts WHERE text = '网页独有'"
+    ).fetchone()["text_id"]
+    conn.close()
+
+    status, _, body = call(app, "GET", f"/duplicates/{dup_text_id}")
+    text = body.decode()
+    check("组详情 200", status == 200, str(status))
+    check("详情含全文与次数", "网页重复文本" in text and "2 次" in text)
+    check("来源含会话号与行号", "w9a" in text and ">1<" in text and ">2<" in text)
+    check("来源含任务链接与源文件", legacy1[:12] in text and "legacy-web.ndjson" in text)
+
+    old_size = config.DUP_SOURCE_PAGE_SIZE
+    config.DUP_SOURCE_PAGE_SIZE = 1
+    try:
+        status, _, body = call(app, "GET", f"/duplicates/{dup_text_id}?page=2")
+        text = body.decode()
+        check("来源分页第二页 200", status == 200 and "第 2 / 2 页" in text)
+        check("分页只含一条来源", text.count("w9a") >= 1 and ">1<" not in text)
+        status, _, body = call(app, "GET", f"/duplicates/{dup_text_id}?page=99")
+        check("超界页码收敛到末页", "第 2 / 2 页" in body.decode())
+    finally:
+        config.DUP_SOURCE_PAGE_SIZE = old_size
+
+    status, _, _ = call(app, "GET", f"/duplicates/{singleton_id}")
+    check("单次文本组详情 404", status == 404, str(status))
+    status, _, _ = call(app, "GET", "/duplicates/999999")
+    check("未知分组 404", status == 404, str(status))
+    status, _, _ = call(app, "POST", "/duplicates/deadbeef/retry")
+    check("重试未知任务 404", status == 404, str(status))
+    status, headers, _ = call(app, "POST", f"/duplicates/{ftid}/retry")
+    check("非完成批次重试仅提示", status == 302)
+    conn = db.get_conn()
+    n = conn.execute(
+        "SELECT COUNT(*) FROM dup_index_batches WHERE task_id = ?", (ftid,)
+    ).fetchone()[0]
+    conn.close()
+    check("失败批次不产生索引记录", n == 0)
+
+    print("[W13] 读取失败：页面显示批次与原因，可重试，不误报就绪")
+    legacy2, legacy2_path = make_legacy_completed(
+        "legacy-missing.ndjson", "", write_file=False
+    )
+    dupindex.backfill_loop(threading.Event())
+    status, _, body = call(app, "GET", "/duplicates")
+    text = body.decode()
+    check("失败时回到未就绪页", status == 200 and "尚未就绪" in text)
+    check("页面显示失败批次与原因",
+          legacy2[:12] in text and "读取副本失败" in text)
+    check("页面提供重试按钮", "重试" in text)
+
+    status, headers, _ = call(app, "POST", f"/duplicates/{legacy2}/retry")
+    check("重试后重定向", status == 302 and headers.get("Location") == "/duplicates")
+    status, _, body = call(app, "GET", headers.get("Location", "/duplicates"))
+    check("缺文件重试仍失败且显示原因", "读取副本失败" in body.decode())
+
+    with open(legacy2_path, "w", encoding="utf-8") as fh:
+        fh.write('{"session_id":"w9c","text":"网页重复文本"}\n')
+    status, headers, _ = call(app, "POST", f"/duplicates/{legacy2}/retry")
+    check("修复后重试成功", status == 302)
+    status, _, body = call(app, "GET", "/duplicates")
+    text = body.decode()
+    check("重试后就绪并展示分组", "尚未就绪" not in text and "查看来源" in text)
+    status, _, body = call(app, "GET", f"/duplicates/{dup_text_id}")
+    text = body.decode()
+    check("跨批来源合入同一组（3 次）", "3 次" in text and "w9c" in text)
 
     print(f"\n结果：{PASS} 通过, {FAIL} 失败")
     sys.exit(1 if FAIL else 0)

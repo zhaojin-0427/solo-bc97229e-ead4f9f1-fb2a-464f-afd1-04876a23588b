@@ -9,6 +9,10 @@
 <body>
   <header class="topbar">
     <a class="brand" href="{{ url_for('index') }}">热线转写脱敏平台</a>
+    <nav class="topnav">
+      <a href="{{ url_for('index') }}">任务</a>
+      <a href="{{ url_for('duplicates') }}">重复语料核查</a>
+    </nav>
     <span class="subtitle">NDJSON 批处理 · 正则替换 · 可取消 / 可追溯</span>
   </header>
   <main class="container">

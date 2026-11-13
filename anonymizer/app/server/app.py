@@ -1,4 +1,4 @@
-"""Flask web entry point: upload, progress, cancel, download."""
+"""Flask web entry point: upload, progress, cancel, download, duplicate check."""
 import os
 import uuid
 
@@ -14,8 +14,25 @@ from flask import (
     url_for,
 )
 
-from .. import config, db
+from .. import config, db, dupindex
 from ..validation import ValidationError, load_rules
+
+
+def _page_param():
+    try:
+        return max(1, int(request.args.get("page", "1")))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _paged(total, size, page):
+    """Clamp ``page`` into [1, pages] and return (page, pages)."""
+    pages = max(1, -(-total // size))
+    return min(max(1, page), pages), pages
+
+
+def _snippet(text, limit=120):
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def create_app():
@@ -117,6 +134,85 @@ def create_app():
             download_name=download_name,
             mimetype="application/x-ndjson; charset=utf-8",
         )
+
+    # ---------------------------------------------------- duplicate check
+    @app.route("/duplicates")
+    def duplicates():
+        status = db.dup_readiness()
+        for f in status["failed"]:
+            f["task_short"] = f["task_id"][:12]
+        if not status["ready"]:
+            # Never serve partial check results: while any completed batch
+            # is unindexed or failed, only the status is shown.
+            pct = int(100 * status["indexed"] / status["total"]) if status["total"] else 100
+            return render_template(
+                "duplicates.html", ready=False, status=status, pct=pct
+            )
+        size = config.DUP_GROUP_PAGE_SIZE
+        total = db.dup_group_count()
+        page, pages = _paged(total, size, _page_param())
+        groups = db.dup_groups(page, size)
+        for g in groups:
+            g["snippet"] = _snippet(g["text"])
+        return render_template(
+            "duplicates.html",
+            ready=True,
+            status=status,
+            groups=groups,
+            total=total,
+            page=page,
+            pages=pages,
+            prev_page=page - 1,
+            next_page=page + 1,
+        )
+
+    @app.route("/duplicates/<int:text_id>")
+    def duplicate_group(text_id):
+        status = db.dup_readiness()
+        if not status["ready"]:
+            for f in status["failed"]:
+                f["task_short"] = f["task_id"][:12]
+            pct = int(100 * status["indexed"] / status["total"]) if status["total"] else 100
+            return render_template(
+                "duplicates.html", ready=False, status=status, pct=pct
+            )
+        group = db.dup_group(text_id)
+        if group is None or group["occurrences"] < 2:
+            abort(404)
+        size = config.DUP_SOURCE_PAGE_SIZE
+        page, pages = _paged(group["occurrences"], size, _page_param())
+        sources = db.dup_group_sources(text_id, page, size)
+        for i, s in enumerate(sources):
+            s["seq"] = (page - 1) * size + i + 1
+            s["task_short"] = s["task_id"][:12]
+        return render_template(
+            "duplicate_group.html",
+            group=group,
+            sources=sources,
+            page=page,
+            pages=pages,
+            prev_page=page - 1,
+            next_page=page + 1,
+        )
+
+    @app.post("/duplicates/<task_id>/retry")
+    def retry_duplicate_index(task_id):
+        task = db.get_task(task_id)
+        if task is None:
+            abort(404)
+        if task["state"] != config.STATE_COMPLETED:
+            flash("只有已完成批次才能重建重复语料索引", "error")
+            return redirect(url_for("duplicates"))
+        ok, error = dupindex.index_batch(task_id, task["output_path"])
+        if ok:
+            flash(f"批次 {task_id[:12]}… 的重复语料索引已重建", "message")
+        else:
+            flash(f"批次 {task_id[:12]}… 重建失败：{error}", "error")
+        return redirect(url_for("duplicates"))
+
+    @app.route("/api/duplicates/status")
+    def api_duplicates_status():
+        return jsonify(db.dup_readiness())
 
     @app.context_processor
     def inject_helpers():
