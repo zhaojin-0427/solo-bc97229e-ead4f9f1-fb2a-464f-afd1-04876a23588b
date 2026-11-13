@@ -1,0 +1,123 @@
+:root {
+  --bg: #f4f6f9;
+  --card: #ffffff;
+  --border: #dde3ea;
+  --text: #1f2933;
+  --muted: #6b7280;
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --success: #15803d;
+  --danger: #dc2626;
+  --warn: #b45309;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC",
+    system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.55;
+}
+.topbar {
+  background: #0f172a;
+  color: #fff;
+  padding: 14px 28px;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+.brand { color: #fff; text-decoration: none; font-size: 18px; font-weight: 700; }
+.subtitle { color: #94a3b8; font-size: 13px; }
+.container { max-width: 1080px; margin: 28px auto; padding: 0 20px; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 22px 26px;
+  margin-bottom: 24px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+h2 { margin-top: 0; font-size: 18px; }
+
+.field { margin-bottom: 18px; }
+label { display: block; font-weight: 600; margin-bottom: 6px; }
+input[type=file], textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #fafbfc;
+}
+textarea { resize: vertical; }
+.hint { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
+code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+
+.btn {
+  display: inline-block;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn-primary:hover { background: var(--primary-dark); }
+.btn-success { background: var(--success); border-color: var(--success); color: #fff; }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn-small { padding: 5px 10px; font-size: 12.5px; margin-right: 6px; }
+
+.flash { padding: 11px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 14px; }
+.flash-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+.flash-message { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+
+.task-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.task-table th, .task-table td {
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.task-table th { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.empty { color: var(--muted); }
+
+.state {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.state-pending      { background: #e0e7ff; color: #3730a3; }
+.state-running      { background: #dbeafe; color: #1e40af; }
+.state-cancelling   { background: #fef3c7; color: #92400e; }
+.state-completed    { background: #dcfce7; color: #166534; }
+.state-failed       { background: #fee2e2; color: #991b1b; }
+.state-cancelled    { background: #f1f5f9; color: #475569; }
+.state-interrupted  { background: #ffedd5; color: #9a3412; }
+
+.meta { display: grid; grid-template-columns: 110px 1fr; gap: 8px 16px; margin: 0 0 18px; }
+.meta dt { color: var(--muted); font-size: 13px; }
+.meta dd { margin: 0; font-size: 14px; }
+
+.progress-bar-wrap {
+  width: 100%; height: 12px; background: #e5e7eb;
+  border-radius: 999px; overflow: hidden; margin-bottom: 16px;
+}
+.progress-bar {
+  height: 100%; background: var(--primary);
+  border-radius: 999px; transition: width .3s ease;
+}
+.button-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+#cancel-form { display: inline; margin: 0; }
+.error-text { color: var(--danger); }

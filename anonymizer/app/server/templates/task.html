@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}任务 {{ task.task_id }} · 脱敏平台{% endblock %}
+{% block content %}
+<section class="card" id="task-card" data-task-id="{{ task.task_id }}">
+  <h2>任务详情</h2>
+  <dl class="meta">
+    <dt>任务号</dt><dd class="mono">{{ task.task_id }}</dd>
+    <dt>源文件</dt><dd>{{ task.original_name }}</dd>
+    <dt>状态</dt><dd><span id="state-badge" class="state state-{{ task.state }}">{{ state_label(task.state) }}</span></dd>
+    <dt>进度</dt><dd><span id="progress-text">{{ task.progress }} / {{ task.total }}</span></dd>
+    <dt>创建时间</dt><dd>{{ task.created_at }}</dd>
+    <dt>完成时间</dt><dd id="finished-at">{{ task.finished_at or '—' }}</dd>
+  </dl>
+
+  <div class="progress-bar-wrap">
+    <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+  </div>
+  <p class="hint" id="error-line" style="display:none"></p>
+
+  <div class="button-row">
+    <form method="post" action="{{ url_for('cancel_task', task_id=task.task_id) }}" id="cancel-form">
+      <button type="submit" class="btn btn-danger" id="cancel-btn">取消任务</button>
+    </form>
+    <a class="btn btn-success" id="download-btn"
+       href="{{ url_for('download_task', task_id=task.task_id) }}"
+       style="display:none">下载完整副本</a>
+    <a class="btn" href="{{ url_for('index') }}">返回列表</a>
+  </div>
+  <p class="hint">规则：取消请求先受理则结果永不发布；结果先发布则取消被拒绝。未完成 / 失败 / 中断任务不可下载。</p>
+</section>
+
+<script>
+const TASK_ID = "{{ task.task_id }}";
+const STATE_LABELS = {
+  pending: '排队中', running: '处理中', cancelling: '取消中',
+  completed: '已完成', failed: '已失败', cancelled: '已取消',
+  interrupted: '已中断'
+};
+const ACTIVE_STATES = new Set(['pending', 'running', 'cancelling']);
+let timer = null;
+
+function render(t) {
+  const badge = document.getElementById('state-badge');
+  badge.textContent = STATE_LABELS[t.state] || t.state;
+  badge.className = `state state-${t.state}`;
+  document.getElementById('progress-text').textContent = `${t.progress} / ${t.total}`;
+  const pct = t.total > 0 ? Math.round((t.progress / t.total) * 100) : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+
+  const errLine = document.getElementById('error-line');
+  if (t.error) {
+    errLine.style.display = 'block';
+    errLine.textContent = '失败原因：' + t.error;
+  }
+  if (t.finished_at) document.getElementById('finished-at').textContent = t.finished_at;
+
+  const cancelBtn = document.getElementById('cancel-btn');
+  cancelBtn.disabled = !ACTIVE_STATES.has(t.state);
+  cancelBtn.title = cancelBtn.disabled ? '任务已处于终态，无法取消' : '';
+
+  document.getElementById('download-btn').style.display =
+    t.state === 'completed' ? 'inline-block' : 'none';
+
+  if (!ACTIVE_STATES.has(t.state) && timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+}
+
+async function poll() {
+  try {
+    const resp = await fetch(`/api/tasks/${TASK_ID}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    render(data.task);
+  } catch (e) { /* 轮询失败不影响页面其它功能 */ }
+}
+timer = setInterval(poll, 1000);
+poll();
+</script>
+{% endblock %}

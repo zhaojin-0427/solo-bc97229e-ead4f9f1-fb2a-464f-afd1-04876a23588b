@@ -1,0 +1,3 @@
+{"session_id":"sess-timeout-1","text":"normal line before the crafted record"}
+{"session_id":"sess-timeout-2","text":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!"}
+{"session_id":"sess-timeout-3","text":"this line must never appear in any downloadable output"}

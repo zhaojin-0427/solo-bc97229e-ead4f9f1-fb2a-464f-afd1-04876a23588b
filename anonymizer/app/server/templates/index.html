@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>新建脱敏任务</h2>
+  <form method="post" action="{{ url_for('create_task') }}" enctype="multipart/form-data" id="upload-form">
+    <div class="field">
+      <label for="file">NDJSON 文件（UTF-8，≤ 5 MiB，每行含 <code>session_id</code> 与 <code>text</code>）</label>
+      <input type="file" id="file" name="file" accept=".ndjson,.jsonl,.json,application/x-ndjson" required>
+      <div class="hint">保留会话号、原始行序与重复行；任一坏行会导致整批失败。</div>
+    </div>
+    <div class="field">
+      <label for="rules">Python <code>re</code> 规则（JSON 数组，按序执行）</label>
+      <textarea id="rules" name="rules" rows="8" spellcheck="false" required>[
+  ["\\d{17}[\\dXx]", "<身份证>"],
+  ["1[3-9]\\d{9}", "<手机>"],
+  ["[\\w.+-]+@[\\w-]+\\.[\\w.-]+", "<邮箱>"]
+]</textarea>
+      <div class="hint">
+        每项为 <code>["模式", "替换串"]</code>，替换串支持 <code>\1</code> 等反向引用（JSON 中写 <code>\\1</code>）。
+        规则按数组顺序依次生效，<strong>更长/更具体的模式请放在前面</strong>，避免被短模式抢先匹配。
+        合法正则不会被拒绝；单条记录单条规则限时 2 秒，超时整批失败。
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary">上传并开始处理</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>任务列表</h2>
+  {% if tasks %}
+  <table class="task-table">
+    <thead>
+      <tr>
+        <th>任务号</th>
+        <th>源文件</th>
+        <th>状态</th>
+        <th>进度</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in tasks %}
+      <tr data-task-id="{{ t.task_id }}">
+        <td class="mono"><a href="{{ url_for('task_detail', task_id=t.task_id) }}">{{ t.task_id[:12] }}…</a></td>
+        <td>{{ t.original_name }}</td>
+        <td><span class="state state-{{ t.state }}">{{ state_label(t.state) }}</span></td>
+        <td class="progress-cell">{{ t.progress }} / {{ t.total }}</td>
+        <td class="actions-cell">
+          <a class="btn btn-small" href="{{ url_for('task_detail', task_id=t.task_id) }}">查看</a>
+          {% if t.state == 'completed' %}
+          <a class="btn btn-small btn-success" href="{{ url_for('download_task', task_id=t.task_id) }}">下载完整副本</a>
+          {% else %}
+          <button class="btn btn-small btn-danger" disabled title="仅完成任务可下载">下载完整副本</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">暂无任务，先在上方上传文件。</p>
+  {% endif %}
+</section>
+
+<script>
+const STATE_LABELS = {
+  pending: '排队中', running: '处理中', cancelling: '取消中',
+  completed: '已完成', failed: '已失败', cancelled: '已取消',
+  interrupted: '已中断'
+};
+
+async function refreshTasks() {
+  try {
+    const resp = await fetch("{{ url_for('api_tasks') }}");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    for (const t of data.tasks) {
+      const row = document.querySelector(`tr[data-task-id="${t.task_id}"]`);
+      if (!row) continue;
+      row.querySelector('.state').textContent = STATE_LABELS[t.state] || t.state;
+      row.querySelector('.state').className = `state state-${t.state}`;
+      row.querySelector('.progress-cell').textContent = `${t.progress} / ${t.total}`;
+    }
+  } catch (e) { /* 后台轮询失败不影响页面可用 */ }
+}
+setInterval(refreshTasks, 2000);
+</script>
+{% endblock %}

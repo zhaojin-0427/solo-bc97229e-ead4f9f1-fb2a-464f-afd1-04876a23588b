@@ -1,0 +1,39 @@
+services:
+  web:
+    build: .
+    image: anonymizer:latest
+    environment:
+      ROLE: web
+      ANON_DATA_DIR: /data
+      ANON_SECRET_KEY: ${ANON_SECRET_KEY:-please-change-me}
+    ports:
+      - "8000:8000"
+    volumes:
+      - anon_data:/data
+    depends_on:
+      - worker
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5).status == 200 else 1)"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    build: .
+    image: anonymizer:latest
+    environment:
+      ROLE: worker
+      ANON_DATA_DIR: /data
+    # The worker spawns a child process per running task to enforce regex
+    # timeouts; it must not be PID 1-limited. A simple restart policy keeps
+    # the pipeline alive, and startup recovery marks in-flight work as
+    # interrupted instead of exposing partial output.
+    volumes:
+      - anon_data:/data
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+volumes:
+  anon_data:
